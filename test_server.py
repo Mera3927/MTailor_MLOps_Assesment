@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Test script for deployed Cerebrium model.
-Tests the deployed model and provides monitoring capabilities.
+Enhanced test script for deployed Cerebrium model with debugging capabilities.
+Tests the deployed model and provides monitoring capabilities with better error handling.
 """
 
 import argparse
@@ -28,27 +28,271 @@ API_KEY = "2om0uempl69t4c6fc70ujstsuk"
 
 class CerebriumModelTester:
     """
-    Test client for deployed Cerebrium model.
+    Enhanced test client for deployed Cerebrium model with debugging capabilities.
     """
     
-    def __init__(self, api_key: str, model_name: str = "resnet18-classifier"):
+    def __init__(self, api_key: str, project_name: str, model_name: str = "resnet18-classifier"):
         """
         Initialize the tester.
         
         Args:
             api_key: Cerebrium API key
+            project_name: Name of the Cerebrium project
             model_name: Name of the deployed model
         """
         self.api_key = api_key
+        self.project_name = project_name
         self.model_name = model_name
-        self.base_url = f"{CEREBRIUM_API_BASE}/p/{model_name}/predict"
+        self.base_url = f"{CEREBRIUM_API_BASE}/p/{project_name}/predict"
         self.headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         
-        logger.info(f"Initialized tester for model: {model_name}")
+        logger.info(f"Initialized tester for project: {project_name}, model: {model_name}")
         logger.info(f"API endpoint: {self.base_url}")
+    
+    def debug_api_connection(self) -> Dict[str, Any]:
+        """
+        Debug API connection and endpoint availability.
+        
+        Returns:
+            Debug information about the API connection
+        """
+        logger.info("Starting API connection debugging...")
+        
+        debug_info = {
+            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+            "api_key_status": "present" if self.api_key else "missing",
+            "project_name": self.project_name,
+            "model_name": self.model_name,
+            "endpoint_url": self.base_url,
+            "tests": []
+        }
+        
+        # Test 1: Check if API key is valid format
+        api_key_test = {
+            "test": "API Key Format",
+            "status": "pass" if len(self.api_key) > 10 else "fail",
+            "details": f"API key length: {len(self.api_key)}"
+        }
+        debug_info["tests"].append(api_key_test)
+        
+        # Test 2: Try different endpoint variations
+        endpoint_variations = [
+            f"{CEREBRIUM_API_BASE}/p/{self.project_name}/predict",
+            f"{CEREBRIUM_API_BASE}/projects/{self.project_name}/predict",
+            f"{CEREBRIUM_API_BASE}/{self.project_name}/predict",
+            f"https://api.cerebrium.ai/v4/p/{self.project_name}/predict",
+            f"https://api.cerebrium.ai/v3/p/{self.project_name}/predict",
+            # Also try with model name in path
+            f"{CEREBRIUM_API_BASE}/p/{self.project_name}/{self.model_name}/predict",
+            f"{CEREBRIUM_API_BASE}/projects/{self.project_name}/{self.model_name}/predict"
+        ]
+        
+        for endpoint in endpoint_variations:
+            endpoint_test = {
+                "test": f"Endpoint Test",
+                "endpoint": endpoint,
+                "status": "unknown",
+                "details": ""
+            }
+            
+            try:
+                # Try a simple GET request first to see if endpoint exists
+                response = requests.get(
+                    endpoint,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=10
+                )
+                
+                endpoint_test["status_code"] = response.status_code
+                endpoint_test["response_headers"] = dict(response.headers)
+                
+                if response.status_code == 404:
+                    endpoint_test["status"] = "not_found"
+                    endpoint_test["details"] = "Endpoint not found (404)"
+                elif response.status_code == 405:
+                    endpoint_test["status"] = "method_not_allowed"
+                    endpoint_test["details"] = "Method not allowed (405) - endpoint exists but GET not supported"
+                elif response.status_code == 401:
+                    endpoint_test["status"] = "unauthorized"
+                    endpoint_test["details"] = "Unauthorized (401) - check API key"
+                elif response.status_code == 403:
+                    endpoint_test["status"] = "forbidden"
+                    endpoint_test["details"] = "Forbidden (403) - API key may be invalid"
+                else:
+                    endpoint_test["status"] = "accessible"
+                    endpoint_test["details"] = f"HTTP {response.status_code}"
+                
+                # Try to get response content
+                try:
+                    endpoint_test["response_body"] = response.text[:500]  # First 500 chars
+                except:
+                    pass
+                    
+            except requests.exceptions.Timeout:
+                endpoint_test["status"] = "timeout"
+                endpoint_test["details"] = "Request timed out"
+            except requests.exceptions.ConnectionError:
+                endpoint_test["status"] = "connection_error"
+                endpoint_test["details"] = "Connection failed"
+            except Exception as e:
+                endpoint_test["status"] = "error"
+                endpoint_test["details"] = str(e)
+            
+            debug_info["tests"].append(endpoint_test)
+            logger.info(f"Tested endpoint {endpoint}: {endpoint_test['status']}")
+            
+            # If we found a working endpoint, update the base URL
+            if endpoint_test["status"] in ["accessible", "method_not_allowed"]:
+                logger.info(f"Found working endpoint: {endpoint}")
+                if endpoint != self.base_url:
+                    logger.info(f"Updating base URL from {self.base_url} to {endpoint}")
+                    self.base_url = endpoint
+                break
+        
+        # Test 3: List available projects (if API supports it)
+        list_projects_test = {
+            "test": "List Projects",
+            "status": "unknown",
+            "details": ""
+        }
+        
+        try:
+            list_url = f"{CEREBRIUM_API_BASE}/projects"
+            response = requests.get(
+                list_url,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=10
+            )
+            
+            list_projects_test["status_code"] = response.status_code
+            if response.status_code == 200:
+                try:
+                    projects = response.json()
+                    list_projects_test["status"] = "success"
+                    list_projects_test["details"] = f"Found {len(projects)} projects"
+                    list_projects_test["projects"] = projects
+                    
+                    # Check if our project exists
+                    if isinstance(projects, list):
+                        project_names = [p.get('name', '') for p in projects if isinstance(p, dict)]
+                        if self.project_name in project_names:
+                            list_projects_test["project_found"] = True
+                            list_projects_test["details"] += f" - Project '{self.project_name}' found"
+                        else:
+                            list_projects_test["project_found"] = False
+                            list_projects_test["details"] += f" - Project '{self.project_name}' NOT found"
+                            list_projects_test["available_projects"] = project_names
+                            
+                except:
+                    list_projects_test["status"] = "success"
+                    list_projects_test["details"] = "Response received but couldn't parse JSON"
+            else:
+                list_projects_test["status"] = "failed"
+                list_projects_test["details"] = f"HTTP {response.status_code}"
+                
+        except Exception as e:
+            list_projects_test["status"] = "error"
+            list_projects_test["details"] = str(e)
+        
+        debug_info["tests"].append(list_projects_test)
+        
+        return debug_info
+    
+    def test_minimal_request(self) -> Dict[str, Any]:
+        """
+        Test with minimal request to isolate issues.
+        
+        Returns:
+            Test results
+        """
+        logger.info("Testing minimal request...")
+        
+        # Create the smallest possible valid image
+        tiny_image = np.ones((1, 1, 3), dtype=np.uint8) * 128  # Gray pixel
+        pil_image = Image.fromarray(tiny_image)
+        
+        # Convert to base64
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format='JPEG')
+        image_bytes = buffer.getvalue()
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+        
+        # Test different request variations
+        test_requests = [
+            {
+                "name": "Minimal request",
+                "data": {"image": image_base64}
+            },
+            {
+                "name": "With top_k",
+                "data": {"image": image_base64, "top_k": 1}
+            },
+            {
+                "name": "With top_k=5",
+                "data": {"image": image_base64, "top_k": 5}
+            }
+        ]
+        
+        results = []
+        
+        for test_request in test_requests:
+            logger.info(f"Testing: {test_request['name']}")
+            
+            try:
+                start_time = time.time()
+                
+                # Make the request
+                response = requests.post(
+                    self.base_url,
+                    headers=self.headers,
+                    json=test_request["data"],
+                    timeout=30
+                )
+                
+                request_time = time.time() - start_time
+                
+                result = {
+                    "test_name": test_request["name"],
+                    "status_code": response.status_code,
+                    "request_time": round(request_time, 4),
+                    "success": response.status_code == 200
+                }
+                
+                # Try to parse response
+                try:
+                    response_data = response.json()
+                    result["response"] = response_data
+                except:
+                    result["response_text"] = response.text[:1000]  # First 1000 chars
+                
+                # Add headers for debugging
+                result["response_headers"] = dict(response.headers)
+                
+                results.append(result)
+                
+                if response.status_code == 200:
+                    logger.info(f"✅ {test_request['name']}: Success")
+                else:
+                    logger.warning(f"❌ {test_request['name']}: HTTP {response.status_code}")
+                    
+            except Exception as e:
+                result = {
+                    "test_name": test_request["name"],
+                    "error": str(e),
+                    "success": False
+                }
+                results.append(result)
+                logger.error(f"❌ {test_request['name']}: Exception - {str(e)}")
+        
+        return {
+            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+            "project_name": self.project_name,
+            "model_name": self.model_name,
+            "minimal_tests": results
+        }
     
     def encode_image_to_base64(self, image_path: Path) -> str:
         """
@@ -66,10 +310,18 @@ class CerebriumModelTester:
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
                 
+                # Resize if too large (common issue)
+                if img.size[0] > 1024 or img.size[1] > 1024:
+                    img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+                    logger.info(f"Resized image to {img.size}")
+                
                 # Convert to bytes
                 buffer = io.BytesIO()
-                img.save(buffer, format='JPEG')
+                img.save(buffer, format='JPEG', quality=85)
                 image_bytes = buffer.getvalue()
+                
+                # Log image info
+                logger.info(f"Image size: {img.size}, Mode: {img.mode}, Bytes: {len(image_bytes)}")
                 
                 # Encode to base64
                 return base64.b64encode(image_bytes).decode('utf-8')
@@ -79,7 +331,7 @@ class CerebriumModelTester:
     
     def predict_image(self, image_path: Path, top_k: int = 5) -> Dict[str, Any]:
         """
-        Send prediction request to deployed model.
+        Send prediction request to deployed model with enhanced error handling.
         
         Args:
             image_path: Path to image file
@@ -93,6 +345,7 @@ class CerebriumModelTester:
         try:
             # Encode image
             image_base64 = self.encode_image_to_base64(image_path)
+            logger.info(f"Base64 encoded image length: {len(image_base64)}")
             
             # Prepare request
             request_data = {
@@ -100,19 +353,47 @@ class CerebriumModelTester:
                 "top_k": top_k
             }
             
+            logger.info(f"Making request to: {self.base_url}")
+            logger.info(f"Request data keys: {list(request_data.keys())}")
+            logger.info(f"Headers: {self.headers}")
+            
             # Send request
             start_time = time.time()
             response = requests.post(
                 self.base_url,
                 headers=self.headers,
                 json=request_data,
-                timeout=30  # 30 second timeout
+                timeout=60  # Increased timeout
             )
             request_time = time.time() - start_time
             
+            logger.info(f"Response status code: {response.status_code}")
+            logger.info(f"Response headers: {dict(response.headers)}")
+            
+            # Log response content for debugging
+            response_text = response.text
+            logger.info(f"Response text (first 500 chars): {response_text[:500]}")
+            
             # Check response
-            response.raise_for_status()
-            result = response.json()
+            if response.status_code != 200:
+                return {
+                    "success": False,
+                    "message": f"HTTP {response.status_code}: {response_text}",
+                    "request_time": request_time,
+                    "status_code": response.status_code,
+                    "response_headers": dict(response.headers)
+                }
+            
+            # Parse JSON response
+            try:
+                result = response.json()
+            except json.JSONDecodeError as e:
+                return {
+                    "success": False,
+                    "message": f"Invalid JSON response: {str(e)}",
+                    "request_time": request_time,
+                    "response_text": response_text[:1000]
+                }
             
             # Add timing information
             result['request_time'] = round(request_time, 4)
@@ -121,6 +402,20 @@ class CerebriumModelTester:
             
             return result
             
+        except requests.exceptions.Timeout:
+            logger.error("Request timed out")
+            return {
+                "success": False,
+                "message": "Request timed out after 60 seconds",
+                "request_time": 60
+            }
+        except requests.exceptions.ConnectionError as e:
+            logger.error(f"Connection error: {str(e)}")
+            return {
+                "success": False,
+                "message": f"Connection error: {str(e)}",
+                "request_time": 0
+            }
         except requests.exceptions.RequestException as e:
             logger.error(f"Request failed: {str(e)}")
             return {
@@ -136,541 +431,106 @@ class CerebriumModelTester:
                 "request_time": 0
             }
     
-    def test_known_images(self) -> Dict[str, Any]:
+    def comprehensive_debug(self, test_image_path: Optional[Path] = None) -> Dict[str, Any]:
         """
-        Test with known images and verify classifications.
-        
-        Returns:
-            Test results dictionary
-        """
-        logger.info("Testing with known images...")
-        
-        results = {
-            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-            "tests": [],
-            "summary": {
-                "total": 0,
-                "passed": 0,
-                "failed": 0
-            }
-        }
-        
-        # Test cases: (image_path, expected_class_id, description)
-        test_cases = [
-            ("n01440764_tench.JPEG", 0, "Tench fish"),
-            ("n01667114_mud_turtle.JPEG", 35, "Mud turtle")
-        ]
-        
-        for image_path, expected_class, description in test_cases:
-            image_path = Path(image_path)
-            
-            if not image_path.exists():
-                logger.warning(f"Test image not found: {image_path}")
-                continue
-            
-            logger.info(f"Testing {description} (expected class: {expected_class})")
-            
-            result = self.predict_image(image_path, top_k=5)
-            
-            test_result = {
-                "image": str(image_path),
-                "description": description,
-                "expected_class": expected_class,
-                "result": result
-            }
-            
-            if result.get("success", False):
-                predicted_class = result.get("class_id", -1)
-                top_5_classes = [pred["class_id"] for pred in result.get("top_predictions", [])]
-                
-                # Check if expected class is in top 5
-                passed = expected_class in top_5_classes
-                test_result["passed"] = passed
-                test_result["predicted_class"] = predicted_class
-                test_result["expected_in_top5"] = passed
-                
-                if passed:
-                    results["summary"]["passed"] += 1
-                    logger.info(f"✅ {description}: Expected class {expected_class} found in top 5")
-                else:
-                    results["summary"]["failed"] += 1
-                    logger.warning(f"❌ {description}: Expected class {expected_class} not in top 5. Got: {top_5_classes}")
-            else:
-                test_result["passed"] = False
-                results["summary"]["failed"] += 1
-                logger.error(f"❌ {description}: Prediction failed - {result.get('message', 'Unknown error')}")
-            
-            results["tests"].append(test_result)
-            results["summary"]["total"] += 1
-            
-            # Small delay between requests
-            time.sleep(1)
-        
-        success_rate = (results["summary"]["passed"] / results["summary"]["total"] * 100) if results["summary"]["total"] > 0 else 0
-        results["summary"]["success_rate"] = round(success_rate, 1)
-        
-        logger.info(f"Known images test completed. Success rate: {success_rate:.1f}%")
-        
-        return results
-    
-    def test_performance(self, image_path: Path, num_requests: int = 10) -> Dict[str, Any]:
-        """
-        Test performance and response times of the deployed model.
+        Run comprehensive debugging to identify the issue.
         
         Args:
-            image_path: Path to test image
-            num_requests: Number of requests to make for averaging
+            test_image_path: Optional path to test image
             
         Returns:
-            Performance test results
+            Complete debug results
         """
-        logger.info(f"Testing performance with {num_requests} requests...")
+        logger.info("Starting comprehensive debugging...")
         
-        if not image_path.exists():
-            return {
-                "success": False,
-                "message": f"Test image not found: {image_path}"
-            }
-        
-        response_times = []
-        inference_times = []
-        successful_requests = 0
-        failed_requests = 0
-        
-        for i in range(num_requests):
-            logger.info(f"Performance test request {i+1}/{num_requests}")
-            result = self.predict_image(image_path, top_k=5)
-            
-            if result.get("success", False):
-                successful_requests += 1
-                response_times.append(result.get("request_time", 0))
-                inference_times.append(result.get("inference_time", 0))
-            else:
-                failed_requests += 1
-                logger.warning(f"Request {i+1} failed: {result.get('message', 'Unknown error')}")
-            
-            # Small delay between requests to avoid overwhelming the server
-            time.sleep(0.5)
-        
-        if successful_requests == 0:
-            return {
-                "success": False,
-                "message": "All performance test requests failed"
-            }
-        
-        # Calculate statistics
-        performance_stats = {
+        debug_results = {
             "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-            "num_requests": num_requests,
-            "successful_requests": successful_requests,
-            "failed_requests": failed_requests,
-            "success_rate": (successful_requests / num_requests) * 100,
-            "response_time_stats": {
-                "mean": statistics.mean(response_times),
-                "median": statistics.median(response_times),
-                "min": min(response_times),
-                "max": max(response_times),
-                "std_dev": statistics.stdev(response_times) if len(response_times) > 1 else 0
-            },
-            "inference_time_stats": {
-                "mean": statistics.mean(inference_times),
-                "median": statistics.median(inference_times),
-                "min": min(inference_times),
-                "max": max(inference_times),
-                "std_dev": statistics.stdev(inference_times) if len(inference_times) > 1 else 0
-            },
-            "performance_requirements": {
-                "target_response_time": 3.0,
-                "meets_requirement": statistics.mean(response_times) < 3.0
-            }
+            "debug_suite": "comprehensive",
+            "project_name": self.project_name,
+            "model_name": self.model_name,
+            "results": {}
         }
         
-        logger.info(f"Performance test completed:")
-        logger.info(f"  Success rate: {performance_stats['success_rate']:.1f}%")
-        logger.info(f"  Average response time: {performance_stats['response_time_stats']['mean']:.3f}s")
-        logger.info(f"  Average inference time: {performance_stats['inference_time_stats']['mean']:.3f}s")
-        logger.info(f"  Meets performance requirement: {performance_stats['performance_requirements']['meets_requirement']}")
-        
-        return performance_stats
-    
-    def test_edge_cases(self) -> Dict[str, Any]:
-        """
-        Test edge cases and error handling.
-        
-        Returns:
-            Edge case test results
-        """
-        logger.info("Testing edge cases...")
-        
-        results = {
-            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-            "tests": [],
-            "summary": {
-                "total": 0,
-                "passed": 0,
-                "failed": 0
-            }
-        }
-        
-        # Test cases
-        test_cases = [
-            {
-                "name": "Invalid base64 data",
-                "data": {"image": "invalid_base64_data", "top_k": 5},
-                "expect_success": False
-            },
-            {
-                "name": "Missing image field",
-                "data": {"top_k": 5},
-                "expect_success": False
-            },
-            {
-                "name": "Invalid top_k value",
-                "data": {"image": self._create_dummy_base64_image(), "top_k": -1},
-                "expect_success": False
-            },
-            {
-                "name": "Large top_k value",
-                "data": {"image": self._create_dummy_base64_image(), "top_k": 1001},
-                "expect_success": True  # Should handle gracefully
-            },
-            {
-                "name": "Empty request body",
-                "data": {},
-                "expect_success": False
-            }
-        ]
-        
-        for test_case in test_cases:
-            logger.info(f"Testing: {test_case['name']}")
-            
-            try:
-                start_time = time.time()
-                response = requests.post(
-                    self.base_url,
-                    headers=self.headers,
-                    json=test_case["data"],
-                    timeout=10
-                )
-                request_time = time.time() - start_time
-                
-                # Parse response
-                try:
-                    result = response.json()
-                except:
-                    result = {"success": False, "message": "Invalid JSON response"}
-                
-                # Determine if test passed
-                actual_success = result.get("success", False) and response.status_code == 200
-                expected_success = test_case["expect_success"]
-                
-                test_passed = (actual_success == expected_success)
-                
-                test_result = {
-                    "test_name": test_case["name"],
-                    "expected_success": expected_success,
-                    "actual_success": actual_success,
-                    "status_code": response.status_code,
-                    "response": result,
-                    "request_time": round(request_time, 4),
-                    "passed": test_passed
-                }
-                
-                if test_passed:
-                    results["summary"]["passed"] += 1
-                    logger.info(f"✅ {test_case['name']}: Behaved as expected")
-                else:
-                    results["summary"]["failed"] += 1
-                    logger.warning(f"❌ {test_case['name']}: Unexpected behavior")
-                
-            except Exception as e:
-                test_result = {
-                    "test_name": test_case["name"],
-                    "expected_success": test_case["expect_success"],
-                    "actual_success": False,
-                    "error": str(e),
-                    "passed": test_case["expect_success"] == False  # If we expected failure, exception is ok
-                }
-                
-                if test_result["passed"]:
-                    results["summary"]["passed"] += 1
-                else:
-                    results["summary"]["failed"] += 1
-                
-                logger.error(f"Exception during {test_case['name']}: {str(e)}")
-            
-            results["tests"].append(test_result)
-            results["summary"]["total"] += 1
-            
-            time.sleep(0.5)  # Small delay between tests
-        
-        success_rate = (results["summary"]["passed"] / results["summary"]["total"] * 100) if results["summary"]["total"] > 0 else 0
-        results["summary"]["success_rate"] = round(success_rate, 1)
-        
-        logger.info(f"Edge case testing completed. Success rate: {success_rate:.1f}%")
-        
-        return results
-    
-    def _create_dummy_base64_image(self) -> str:
-        """Create a dummy base64 encoded image for testing."""
-        # Create a simple RGB image
-        image = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
-        pil_image = Image.fromarray(image)
-        
-        # Convert to base64
-        buffer = io.BytesIO()
-        pil_image.save(buffer, format='JPEG')
-        image_bytes = buffer.getvalue()
-        
-        return base64.b64encode(image_bytes).decode('utf-8')
-    
-    def test_concurrent_requests(self, image_path: Path, num_concurrent: int = 5) -> Dict[str, Any]:
-        """
-        Test concurrent request handling.
-        
-        Args:
-            image_path: Path to test image
-            num_concurrent: Number of concurrent requests
-            
-        Returns:
-            Concurrent test results
-        """
-        import threading
-        import queue
-        
-        logger.info(f"Testing {num_concurrent} concurrent requests...")
-        
-        if not image_path.exists():
-            return {
-                "success": False,
-                "message": f"Test image not found: {image_path}"
-            }
-        
-        results_queue = queue.Queue()
-        
-        def make_request(request_id):
-            """Make a single request and store result."""
-            try:
-                result = self.predict_image(image_path, top_k=3)
-                result["request_id"] = request_id
-                results_queue.put(result)
-            except Exception as e:
-                results_queue.put({
-                    "request_id": request_id,
-                    "success": False,
-                    "message": str(e),
-                    "request_time": 0
-                })
-        
-        # Start concurrent requests
-        threads = []
-        start_time = time.time()
-        
-        for i in range(num_concurrent):
-            thread = threading.Thread(target=make_request, args=(i,))
-            threads.append(thread)
-            thread.start()
-        
-        # Wait for all threads to complete
-        for thread in threads:
-            thread.join()
-        
-        total_time = time.time() - start_time
-        
-        # Collect results
-        request_results = []
-        successful_requests = 0
-        
-        while not results_queue.empty():
-            result = results_queue.get()
-            request_results.append(result)
-            if result.get("success", False):
-                successful_requests += 1
-        
-        concurrent_stats = {
-            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-            "num_concurrent": num_concurrent,
-            "successful_requests": successful_requests,
-            "failed_requests": num_concurrent - successful_requests,
-            "success_rate": (successful_requests / num_concurrent) * 100,
-            "total_time": round(total_time, 4),
-            "requests": request_results
-        }
-        
-        logger.info(f"Concurrent test completed:")
-        logger.info(f"  {successful_requests}/{num_concurrent} requests successful")
-        logger.info(f"  Total time: {total_time:.3f}s")
-        logger.info(f"  Success rate: {concurrent_stats['success_rate']:.1f}%")
-        
-        return concurrent_stats
-    
-    def health_check(self) -> Dict[str, Any]:
-        """
-        Perform health check on the deployed model.
-        
-        Returns:
-            Health check results
-        """
-        logger.info("Performing health check...")
-        
-        try:
-            # Create a simple test image
-            test_image = self._create_dummy_base64_image()
-            
-            # Make a simple prediction request
-            start_time = time.time()
-            response = requests.post(
-                self.base_url,
-                headers=self.headers,
-                json={"image": test_image, "top_k": 1},
-                timeout=10
-            )
-            response_time = time.time() - start_time
-            
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("success", False):
-                    return {
-                        "status": "healthy",
-                        "message": "Service is operational",
-                        "response_time": round(response_time, 4),
-                        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
-                    }
-                else:
-                    return {
-                        "status": "unhealthy",
-                        "message": f"Service returned error: {result.get('message', 'Unknown error')}",
-                        "response_time": round(response_time, 4),
-                        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
-                    }
-            else:
-                return {
-                    "status": "unhealthy",
-                    "message": f"HTTP error: {response.status_code}",
-                    "response_time": round(response_time, 4),
-                    "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
-                }
-                
-        except Exception as e:
-            return {
-                "status": "unhealthy",
-                "message": f"Health check failed: {str(e)}",
-                "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
-            }
-    
-    def comprehensive_test_suite(self, test_image_path: Optional[Path] = None) -> Dict[str, Any]:
-        """
-        Run comprehensive test suite covering all aspects.
-        
-        Args:
-            test_image_path: Optional path to test image (uses default if not provided)
-            
-        Returns:
-            Complete test results
-        """
-        logger.info("Starting comprehensive test suite...")
-        
-        # Use default test image if none provided
-        if test_image_path is None:
-            test_image_path = Path("n01440764_tench.JPEG")
-            if not test_image_path.exists():
-                # Create a dummy image for testing
-                test_image = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
-                Image.fromarray(test_image).save("temp_test_image.jpg")
-                test_image_path = Path("temp_test_image.jpg")
-        
-        test_results = {
-            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-            "test_suite": "comprehensive",
-            "tests": {}
-        }
-        
-        # 1. Health Check
+        # 1. API Connection Debug
         logger.info("=" * 50)
-        logger.info("RUNNING HEALTH CHECK")
+        logger.info("DEBUGGING API CONNECTION")
         logger.info("=" * 50)
-        test_results["tests"]["health_check"] = self.health_check()
+        debug_results["results"]["api_debug"] = self.debug_api_connection()
         
-        # 2. Known Images Test
+        # 2. Minimal Request Test
         logger.info("=" * 50)
-        logger.info("RUNNING KNOWN IMAGES TEST")
+        logger.info("TESTING MINIMAL REQUEST")
         logger.info("=" * 50)
-        test_results["tests"]["known_images"] = self.test_known_images()
+        debug_results["results"]["minimal_test"] = self.test_minimal_request()
         
-        # 3. Performance Test
-        logger.info("=" * 50)
-        logger.info("RUNNING PERFORMANCE TEST")
-        logger.info("=" * 50)
-        test_results["tests"]["performance"] = self.test_performance(test_image_path, num_requests=5)
+        # 3. Image Test (if image provided)
+        if test_image_path and test_image_path.exists():
+            logger.info("=" * 50)
+            logger.info("TESTING WITH PROVIDED IMAGE")
+            logger.info("=" * 50)
+            debug_results["results"]["image_test"] = self.predict_image(test_image_path)
         
-        # 4. Edge Cases Test
-        logger.info("=" * 50)
-        logger.info("RUNNING EDGE CASES TEST")
-        logger.info("=" * 50)
-        test_results["tests"]["edge_cases"] = self.test_edge_cases()
+        # 4. Generate recommendations
+        recommendations = []
         
-        # 5. Concurrent Requests Test
-        logger.info("=" * 50)
-        logger.info("RUNNING CONCURRENT REQUESTS TEST")
-        logger.info("=" * 50)
-        test_results["tests"]["concurrent"] = self.test_concurrent_requests(test_image_path, num_concurrent=3)
+        # Check API debug results
+        api_debug = debug_results["results"]["api_debug"]
+        working_endpoints = [test for test in api_debug["tests"] 
+                           if test.get("status") in ["accessible", "method_not_allowed"]]
         
-        # Calculate overall summary
-        overall_passed = 0
-        overall_total = 0
+        if not working_endpoints:
+            recommendations.append(f"No working endpoints found. Check if the project '{self.project_name}' is deployed and the project name is correct.")
         
-        for test_name, test_result in test_results["tests"].items():
-            if "summary" in test_result:
-                overall_passed += test_result["summary"].get("passed", 0)
-                overall_total += test_result["summary"].get("total", 0)
-            elif test_name == "health_check":
-                overall_total += 1
-                if test_result.get("status") == "healthy":
-                    overall_passed += 1
+        if api_debug["api_key_status"] == "missing":
+            recommendations.append("API key is missing or too short. Verify your Cerebrium API key.")
         
-        test_results["overall_summary"] = {
-            "total_tests": overall_total,
-            "passed_tests": overall_passed,
-            "failed_tests": overall_total - overall_passed,
-            "success_rate": (overall_passed / overall_total * 100) if overall_total > 0 else 0
-        }
+        # Check if project was found in listing
+        project_list_test = next((test for test in api_debug["tests"] if test.get("test") == "List Projects"), None)
+        if project_list_test and project_list_test.get("project_found") == False:
+            available_projects = project_list_test.get("available_projects", [])
+            recommendations.append(f"Project '{self.project_name}' not found. Available projects: {available_projects}")
         
-        # Clean up temporary image if created
-        if test_image_path.name == "temp_test_image.jpg":
-            test_image_path.unlink()
+        # Check minimal test results
+        minimal_test = debug_results["results"]["minimal_test"]
+        successful_tests = [test for test in minimal_test["minimal_tests"] if test.get("success")]
+        
+        if not successful_tests:
+            recommendations.append("All minimal tests failed. This suggests a fundamental API or authentication issue.")
+        
+        # Check for common error patterns
+        for test in minimal_test["minimal_tests"]:
+            if test.get("status_code") == 404:
+                recommendations.append(f"404 errors suggest the project endpoint doesn't exist. Double-check the project name '{self.project_name}' and deployment status.")
+            elif test.get("status_code") == 401:
+                recommendations.append("401 errors suggest authentication issues. Verify your API key is correct and has proper permissions.")
+            elif test.get("status_code") == 403:
+                recommendations.append("403 errors suggest the API key is invalid or doesn't have access to this project.")
+        
+        debug_results["recommendations"] = recommendations
         
         logger.info("=" * 50)
-        logger.info("COMPREHENSIVE TEST SUITE COMPLETED")
+        logger.info("DEBUGGING COMPLETED")
         logger.info("=" * 50)
-        logger.info(f"Overall Success Rate: {test_results['overall_summary']['success_rate']:.1f}%")
-        logger.info(f"Tests Passed: {test_results['overall_summary']['passed_tests']}/{test_results['overall_summary']['total_tests']}")
         
-        return test_results
-
-
-def save_test_results(results: Dict[str, Any], output_file: str = "test_results.json"):
-    """Save test results to JSON file."""
-    try:
-        with open(output_file, 'w') as f:
-            json.dump(results, f, indent=2)
-        logger.info(f"Test results saved to: {output_file}")
-    except Exception as e:
-        logger.error(f"Failed to save test results: {str(e)}")
+        if recommendations:
+            logger.info("RECOMMENDATIONS:")
+            for i, rec in enumerate(recommendations, 1):
+                logger.info(f"{i}. {rec}")
+        
+        return debug_results
 
 
 def main():
-    """Main entry point for the test script."""
-    parser = argparse.ArgumentParser(description="Test deployed Cerebrium model")
+    """Main entry point for the enhanced test script."""
+    parser = argparse.ArgumentParser(description="Enhanced Cerebrium model tester with debugging")
     parser.add_argument("--image", type=str, help="Path to test image")
     parser.add_argument("--api-key", type=str, default=API_KEY, help="Cerebrium API key")
+    parser.add_argument("--project-name", type=str, required=True, help="Cerebrium project name")
     parser.add_argument("--model-name", type=str, default="resnet18-classifier", help="Deployed model name")
     parser.add_argument("--test-type", type=str, choices=[
-        "single", "known", "performance", "edge", "concurrent", "health", "comprehensive"
-    ], default="comprehensive", help="Type of test to run")
-    parser.add_argument("--top-k", type=int, default=5, help="Number of top predictions to return")
-    parser.add_argument("--num-requests", type=int, default=10, help="Number of requests for performance testing")
-    parser.add_argument("--concurrent", type=int, default=5, help="Number of concurrent requests")
-    parser.add_argument("--output", type=str, default="test_results.json", help="Output file for test results")
+        "debug", "minimal", "single", "api-debug"
+    ], default="debug", help="Type of test to run")
+    parser.add_argument("--output", type=str, default="debug_results.json", help="Output file for results")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     
     args = parser.parse_args()
@@ -680,14 +540,24 @@ def main():
     
     # Initialize tester
     try:
-        tester = CerebriumModelTester(args.api_key, args.model_name)
+        tester = CerebriumModelTester(args.api_key, args.project_name, args.model_name)
     except Exception as e:
         logger.error(f"Failed to initialize tester: {str(e)}")
         return 1
     
     # Run tests based on type
     try:
-        if args.test_type == "single":
+        if args.test_type == "debug":
+            image_path = Path(args.image) if args.image else None
+            results = tester.comprehensive_debug(image_path)
+            
+        elif args.test_type == "api-debug":
+            results = tester.debug_api_connection()
+            
+        elif args.test_type == "minimal":
+            results = tester.test_minimal_request()
+            
+        elif args.test_type == "single":
             if not args.image:
                 logger.error("--image is required for single image testing")
                 return 1
@@ -697,60 +567,33 @@ def main():
                 logger.error(f"Image not found: {image_path}")
                 return 1
             
-            result = tester.predict_image(image_path, top_k=args.top_k)
+            result = tester.predict_image(image_path)
             print(json.dumps(result, indent=2))
-            
-            if result.get("success", False):
-                print(f"\nPredicted class: {result.get('class_id', 'Unknown')}")
-                return 0
-            else:
-                return 1
-                
-        elif args.test_type == "known":
-            results = tester.test_known_images()
-            
-        elif args.test_type == "performance":
-            if not args.image:
-                logger.error("--image is required for performance testing")
-                return 1
-            results = tester.test_performance(Path(args.image), num_requests=args.num_requests)
-            
-        elif args.test_type == "edge":
-            results = tester.test_edge_cases()
-            
-        elif args.test_type == "concurrent":
-            if not args.image:
-                logger.error("--image is required for concurrent testing")
-                return 1
-            results = tester.test_concurrent_requests(Path(args.image), num_concurrent=args.concurrent)
-            
-        elif args.test_type == "health":
-            results = tester.health_check()
-            print(json.dumps(results, indent=2))
-            return 0 if results.get("status") == "healthy" else 1
-            
-        elif args.test_type == "comprehensive":
-            image_path = Path(args.image) if args.image else None
-            results = tester.comprehensive_test_suite(image_path)
+            return 0 if result.get("success", False) else 1
         
-        # Save and display results
-        save_test_results(results, args.output)
+        # Save results
+        try:
+            with open(args.output, 'w') as f:
+                json.dump(results, f, indent=2)
+            logger.info(f"Results saved to: {args.output}")
+        except Exception as e:
+            logger.error(f"Failed to save results: {str(e)}")
         
-        # Determine exit code based on results
-        if "overall_summary" in results:
-            success_rate = results["overall_summary"]["success_rate"]
-            return 0 if success_rate >= 80 else 1  # 80% success rate threshold
-        elif "summary" in results:
-            success_rate = results["summary"]["success_rate"]
-            return 0 if success_rate >= 80 else 1
-        else:
-            return 0
+        # Print summary
+        print("\n" + "="*60)
+        print("DEBUG SUMMARY")
+        print("="*60)
+        print(json.dumps(results, indent=2))
+        
+        return 0
             
     except KeyboardInterrupt:
         logger.info("Testing interrupted by user")
         return 1
     except Exception as e:
         logger.error(f"Testing failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return 1
 
 

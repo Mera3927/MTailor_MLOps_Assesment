@@ -11,10 +11,11 @@ import json
 import logging
 import requests
 import time
+import statistics
 from pathlib import Path
 from PIL import Image
 import numpy as np
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,6 +48,7 @@ class CerebriumModelTester:
         }
         
         logger.info(f"Initialized tester for model: {model_name}")
+        logger.info(f"API endpoint: {self.base_url}")
     
     def encode_image_to_base64(self, image_path: Path) -> str:
         """
@@ -207,93 +209,89 @@ class CerebriumModelTester:
         success_rate = (results["summary"]["passed"] / results["summary"]["total"] * 100) if results["summary"]["total"] > 0 else 0
         results["summary"]["success_rate"] = round(success_rate, 1)
         
-        logger.info(f"Known images test completed. Success rate: {success_rate}%")
+        logger.info(f"Known images test completed. Success rate: {success_rate:.1f}%")
         
         return results
     
-    def test_model_health(self) -> Dict[str, Any]:
+    def test_performance(self, image_path: Path, num_requests: int = 10) -> Dict[str, Any]:
         """
-        Test model health and response times.
+        Test performance and response times of the deployed model.
         
+        Args:
+            image_path: Path to test image
+            num_requests: Number of requests to make for averaging
+            
         Returns:
-            Health test results
+            Performance test results
         """
-        logger.info("Testing model health...")
+        logger.info(f"Testing performance with {num_requests} requests...")
         
-        results = {
+        if not image_path.exists():
+            return {
+                "success": False,
+                "message": f"Test image not found: {image_path}"
+            }
+        
+        response_times = []
+        inference_times = []
+        successful_requests = 0
+        failed_requests = 0
+        
+        for i in range(num_requests):
+            logger.info(f"Performance test request {i+1}/{num_requests}")
+            result = self.predict_image(image_path, top_k=5)
+            
+            if result.get("success", False):
+                successful_requests += 1
+                response_times.append(result.get("request_time", 0))
+                inference_times.append(result.get("inference_time", 0))
+            else:
+                failed_requests += 1
+                logger.warning(f"Request {i+1} failed: {result.get('message', 'Unknown error')}")
+            
+            # Small delay between requests to avoid overwhelming the server
+            time.sleep(0.5)
+        
+        if successful_requests == 0:
+            return {
+                "success": False,
+                "message": "All performance test requests failed"
+            }
+        
+        # Calculate statistics
+        performance_stats = {
             "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-            "health_checks": [],
-            "performance_metrics": {
-                "avg_response_time": 0,
-                "min_response_time": float('inf'),
-                "max_response_time": 0,
-                "success_count": 0,
-                "total_requests": 0
+            "num_requests": num_requests,
+            "successful_requests": successful_requests,
+            "failed_requests": failed_requests,
+            "success_rate": (successful_requests / num_requests) * 100,
+            "response_time_stats": {
+                "mean": statistics.mean(response_times),
+                "median": statistics.median(response_times),
+                "min": min(response_times),
+                "max": max(response_times),
+                "std_dev": statistics.stdev(response_times) if len(response_times) > 1 else 0
+            },
+            "inference_time_stats": {
+                "mean": statistics.mean(inference_times),
+                "median": statistics.median(inference_times),
+                "min": min(inference_times),
+                "max": max(inference_times),
+                "std_dev": statistics.stdev(inference_times) if len(inference_times) > 1 else 0
+            },
+            "performance_requirements": {
+                "target_response_time": 3.0,
+                "meets_requirement": statistics.mean(response_times) < 3.0
             }
         }
         
-        # Use the tench image for health checks if available
-        test_image = Path("n01440764_tench.JPEG")
-        if not test_image.exists():
-            logger.error("Test image not found for health check")
-            return results
+        logger.info(f"Performance test completed:")
+        logger.info(f"  Success rate: {performance_stats['success_rate']:.1f}%")
+        logger.info(f"  Average response time: {performance_stats['response_time_stats']['mean']:.3f}s")
+        logger.info(f"  Average inference time: {performance_stats['inference_time_stats']['mean']:.3f}s")
+        logger.info(f"  Meets performance requirement: {performance_stats['performance_requirements']['meets_requirement']}")
         
-        # Perform multiple requests to test consistency
-        num_requests = 5
-        response_times = []
-        
-        for i in range(num_requests):
-            logger.info(f"Health check request {i+1}/{num_requests}")
-            
-            result = self.predict_image(test_image, top_k=1)
-            
-            health_check = {
-                "request_number": i + 1,
-                "success": result.get("success", False),
-                "response_time": result.get("request_time", 0),
-                "timestamp": time.strftime('%H:%M:%S')
-            }
-            
-            results["health_checks"].append(health_check)
-            results["performance_metrics"]["total_requests"] += 1
-            
-            if health_check["success"]:
-                results["performance_metrics"]["success_count"] += 1
-                response_time = health_check["response_time"]
-                response_times.append(response_time)
-                
-                # Update min/max response times
-                if response_time < results["performance_metrics"]["min_response_time"]:
-                    results["performance_metrics"]["min_response_time"] = response_time
-                if response_time > results["performance_metrics"]["max_response_time"]:
-                    results["performance_metrics"]["max_response_time"] = response_time
-            
-            # Small delay between requests
-            time.sleep(2)
-        
-        # Calculate average response time
-        if response_times:
-            results["performance_metrics"]["avg_response_time"] = round(
-                sum(response_times) / len(response_times), 4
-            )
-            results["performance_metrics"]["min_response_time"] = round(
-                results["performance_metrics"]["min_response_time"], 4
-            )
-            results["performance_metrics"]["max_response_time"] = round(
-                results["performance_metrics"]["max_response_time"], 4
-            )
-        else:
-            results["performance_metrics"]["min_response_time"] = 0
-        
-        # Calculate success rate
-        success_rate = (results["performance_metrics"]["success_count"] / 
-                       results["performance_metrics"]["total_requests"] * 100)
-        results["performance_metrics"]["success_rate"] = round(success_rate, 1)
-        
-        logger.info(f"Health check completed. Success rate: {success_rate}%")
-        logger.info(f"Average response time: {results['performance_metrics']['avg_response_time']}s")
-        
-        return results
+        return performance_stats
     
     def test_edge_cases(self) -> Dict[str, Any]:
         """
@@ -306,356 +304,453 @@ class CerebriumModelTester:
         
         results = {
             "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-            "edge_tests": []
+            "tests": [],
+            "summary": {
+                "total": 0,
+                "passed": 0,
+                "failed": 0
+            }
         }
         
-        # Test 1: Invalid base64 data
-        logger.info("Testing invalid base64 data...")
-        try:
-            response = requests.post(
-                self.base_url,
-                headers=self.headers,
-                json={"image": "invalid_base64_data", "top_k": 5},
-                timeout=30
-            )
+        # Test cases
+        test_cases = [
+            {
+                "name": "Invalid base64 data",
+                "data": {"image": "invalid_base64_data", "top_k": 5},
+                "expect_success": False
+            },
+            {
+                "name": "Missing image field",
+                "data": {"top_k": 5},
+                "expect_success": False
+            },
+            {
+                "name": "Invalid top_k value",
+                "data": {"image": self._create_dummy_base64_image(), "top_k": -1},
+                "expect_success": False
+            },
+            {
+                "name": "Large top_k value",
+                "data": {"image": self._create_dummy_base64_image(), "top_k": 1001},
+                "expect_success": True  # Should handle gracefully
+            },
+            {
+                "name": "Empty request body",
+                "data": {},
+                "expect_success": False
+            }
+        ]
+        
+        for test_case in test_cases:
+            logger.info(f"Testing: {test_case['name']}")
             
-            edge_test = {
-                "test": "invalid_base64",
-                "description": "Test with invalid base64 data",
-                "status_code": response.status_code,
-                "success": response.status_code >= 400,  # Should fail gracefully
-                "response": response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text
-            }
-        except Exception as e:
-            edge_test = {
-                "test": "invalid_base64",
-                "description": "Test with invalid base64 data",
-                "success": True,  # Exception is expected
-                "error": str(e)
-            }
-        
-        results["edge_tests"].append(edge_test)
-        
-        # Test 2: Missing required fields
-        logger.info("Testing missing required fields...")
-        try:
-            response = requests.post(
-                self.base_url,
-                headers=self.headers,
-                json={"top_k": 5},  # Missing image field
-                timeout=30
-            )
-            
-            edge_test = {
-                "test": "missing_image_field",
-                "description": "Test with missing image field",
-                "status_code": response.status_code,
-                "success": response.status_code >= 400,  # Should fail gracefully
-                "response": response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text
-            }
-        except Exception as e:
-            edge_test = {
-                "test": "missing_image_field",
-                "description": "Test with missing image field",
-                "success": True,  # Exception is expected
-                "error": str(e)
-            }
-        
-        results["edge_tests"].append(edge_test)
-        
-        # Test 3: Invalid top_k values
-        logger.info("Testing invalid top_k values...")
-        test_image = Path("n01440764_tench.JPEG")
-        if test_image.exists():
-            invalid_top_k_values = [-1, 0, 1001]  # Invalid values
-            
-            for top_k in invalid_top_k_values:
-                try:
-                    image_base64 = self.encode_image_to_base64(test_image)
-                    response = requests.post(
-                        self.base_url,
-                        headers=self.headers,
-                        json={"image": image_base64, "top_k": top_k},
-                        timeout=30
-                    )
-                    
-                    edge_test = {
-                        "test": f"invalid_top_k_{top_k}",
-                        "description": f"Test with invalid top_k value: {top_k}",
-                        "status_code": response.status_code,
-                        "success": response.status_code < 500,  # Should handle gracefully
-                        "response": response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text
-                    }
-                except Exception as e:
-                    edge_test = {
-                        "test": f"invalid_top_k_{top_k}",
-                        "description": f"Test with invalid top_k value: {top_k}",
-                        "success": False,
-                        "error": str(e)
-                    }
+            try:
+                start_time = time.time()
+                response = requests.post(
+                    self.base_url,
+                    headers=self.headers,
+                    json=test_case["data"],
+                    timeout=10
+                )
+                request_time = time.time() - start_time
                 
-                results["edge_tests"].append(edge_test)
+                # Parse response
+                try:
+                    result = response.json()
+                except:
+                    result = {"success": False, "message": "Invalid JSON response"}
+                
+                # Determine if test passed
+                actual_success = result.get("success", False) and response.status_code == 200
+                expected_success = test_case["expect_success"]
+                
+                test_passed = (actual_success == expected_success)
+                
+                test_result = {
+                    "test_name": test_case["name"],
+                    "expected_success": expected_success,
+                    "actual_success": actual_success,
+                    "status_code": response.status_code,
+                    "response": result,
+                    "request_time": round(request_time, 4),
+                    "passed": test_passed
+                }
+                
+                if test_passed:
+                    results["summary"]["passed"] += 1
+                    logger.info(f"✅ {test_case['name']}: Behaved as expected")
+                else:
+                    results["summary"]["failed"] += 1
+                    logger.warning(f"❌ {test_case['name']}: Unexpected behavior")
+                
+            except Exception as e:
+                test_result = {
+                    "test_name": test_case["name"],
+                    "expected_success": test_case["expect_success"],
+                    "actual_success": False,
+                    "error": str(e),
+                    "passed": test_case["expect_success"] == False  # If we expected failure, exception is ok
+                }
+                
+                if test_result["passed"]:
+                    results["summary"]["passed"] += 1
+                else:
+                    results["summary"]["failed"] += 1
+                
+                logger.error(f"Exception during {test_case['name']}: {str(e)}")
+            
+            results["tests"].append(test_result)
+            results["summary"]["total"] += 1
+            
+            time.sleep(0.5)  # Small delay between tests
         
-        logger.info("Edge case testing completed")
+        success_rate = (results["summary"]["passed"] / results["summary"]["total"] * 100) if results["summary"]["total"] > 0 else 0
+        results["summary"]["success_rate"] = round(success_rate, 1)
+        
+        logger.info(f"Edge case testing completed. Success rate: {success_rate:.1f}%")
         
         return results
     
-    def run_comprehensive_test(self) -> Dict[str, Any]:
+    def _create_dummy_base64_image(self) -> str:
+        """Create a dummy base64 encoded image for testing."""
+        # Create a simple RGB image
+        image = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+        pil_image = Image.fromarray(image)
+        
+        # Convert to base64
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format='JPEG')
+        image_bytes = buffer.getvalue()
+        
+        return base64.b64encode(image_bytes).decode('utf-8')
+    
+    def test_concurrent_requests(self, image_path: Path, num_concurrent: int = 5) -> Dict[str, Any]:
         """
-        Run all tests and generate comprehensive report.
+        Test concurrent request handling.
+        
+        Args:
+            image_path: Path to test image
+            num_concurrent: Number of concurrent requests
+            
+        Returns:
+            Concurrent test results
+        """
+        import threading
+        import queue
+        
+        logger.info(f"Testing {num_concurrent} concurrent requests...")
+        
+        if not image_path.exists():
+            return {
+                "success": False,
+                "message": f"Test image not found: {image_path}"
+            }
+        
+        results_queue = queue.Queue()
+        
+        def make_request(request_id):
+            """Make a single request and store result."""
+            try:
+                result = self.predict_image(image_path, top_k=3)
+                result["request_id"] = request_id
+                results_queue.put(result)
+            except Exception as e:
+                results_queue.put({
+                    "request_id": request_id,
+                    "success": False,
+                    "message": str(e),
+                    "request_time": 0
+                })
+        
+        # Start concurrent requests
+        threads = []
+        start_time = time.time()
+        
+        for i in range(num_concurrent):
+            thread = threading.Thread(target=make_request, args=(i,))
+            threads.append(thread)
+            thread.start()
+        
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+        
+        total_time = time.time() - start_time
+        
+        # Collect results
+        request_results = []
+        successful_requests = 0
+        
+        while not results_queue.empty():
+            result = results_queue.get()
+            request_results.append(result)
+            if result.get("success", False):
+                successful_requests += 1
+        
+        concurrent_stats = {
+            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
+            "num_concurrent": num_concurrent,
+            "successful_requests": successful_requests,
+            "failed_requests": num_concurrent - successful_requests,
+            "success_rate": (successful_requests / num_concurrent) * 100,
+            "total_time": round(total_time, 4),
+            "requests": request_results
+        }
+        
+        logger.info(f"Concurrent test completed:")
+        logger.info(f"  {successful_requests}/{num_concurrent} requests successful")
+        logger.info(f"  Total time: {total_time:.3f}s")
+        logger.info(f"  Success rate: {concurrent_stats['success_rate']:.1f}%")
+        
+        return concurrent_stats
+    
+    def health_check(self) -> Dict[str, Any]:
+        """
+        Perform health check on the deployed model.
         
         Returns:
-            Comprehensive test results
+            Health check results
+        """
+        logger.info("Performing health check...")
+        
+        try:
+            # Create a simple test image
+            test_image = self._create_dummy_base64_image()
+            
+            # Make a simple prediction request
+            start_time = time.time()
+            response = requests.post(
+                self.base_url,
+                headers=self.headers,
+                json={"image": test_image, "top_k": 1},
+                timeout=10
+            )
+            response_time = time.time() - start_time
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("success", False):
+                    return {
+                        "status": "healthy",
+                        "message": "Service is operational",
+                        "response_time": round(response_time, 4),
+                        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                else:
+                    return {
+                        "status": "unhealthy",
+                        "message": f"Service returned error: {result.get('message', 'Unknown error')}",
+                        "response_time": round(response_time, 4),
+                        "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+                    }
+            else:
+                return {
+                    "status": "unhealthy",
+                    "message": f"HTTP error: {response.status_code}",
+                    "response_time": round(response_time, 4),
+                    "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+                }
+                
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "message": f"Health check failed: {str(e)}",
+                "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+            }
+    
+    def comprehensive_test_suite(self, test_image_path: Optional[Path] = None) -> Dict[str, Any]:
+        """
+        Run comprehensive test suite covering all aspects.
+        
+        Args:
+            test_image_path: Optional path to test image (uses default if not provided)
+            
+        Returns:
+            Complete test results
         """
         logger.info("Starting comprehensive test suite...")
         
-        comprehensive_results = {
+        # Use default test image if none provided
+        if test_image_path is None:
+            test_image_path = Path("n01440764_tench.JPEG")
+            if not test_image_path.exists():
+                # Create a dummy image for testing
+                test_image = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+                Image.fromarray(test_image).save("temp_test_image.jpg")
+                test_image_path = Path("temp_test_image.jpg")
+        
+        test_results = {
             "timestamp": time.strftime('%Y-%m-%d %H:%M:%S'),
-            "model_name": self.model_name,
-            "api_endpoint": self.base_url,
-            "test_results": {},
-            "overall_summary": {}
+            "test_suite": "comprehensive",
+            "tests": {}
         }
         
-        # Run known images test
-        try:
-            comprehensive_results["test_results"]["known_images"] = self.test_known_images()
-        except Exception as e:
-            logger.error(f"Known images test failed: {str(e)}")
-            comprehensive_results["test_results"]["known_images"] = {"error": str(e)}
+        # 1. Health Check
+        logger.info("=" * 50)
+        logger.info("RUNNING HEALTH CHECK")
+        logger.info("=" * 50)
+        test_results["tests"]["health_check"] = self.health_check()
         
-        # Run health test
-        try:
-            comprehensive_results["test_results"]["health_check"] = self.test_model_health()
-        except Exception as e:
-            logger.error(f"Health check test failed: {str(e)}")
-            comprehensive_results["test_results"]["health_check"] = {"error": str(e)}
+        # 2. Known Images Test
+        logger.info("=" * 50)
+        logger.info("RUNNING KNOWN IMAGES TEST")
+        logger.info("=" * 50)
+        test_results["tests"]["known_images"] = self.test_known_images()
         
-        # Run edge cases test
-        try:
-            comprehensive_results["test_results"]["edge_cases"] = self.test_edge_cases()
-        except Exception as e:
-            logger.error(f"Edge cases test failed: {str(e)}")
-            comprehensive_results["test_results"]["edge_cases"] = {"error": str(e)}
+        # 3. Performance Test
+        logger.info("=" * 50)
+        logger.info("RUNNING PERFORMANCE TEST")
+        logger.info("=" * 50)
+        test_results["tests"]["performance"] = self.test_performance(test_image_path, num_requests=5)
+        
+        # 4. Edge Cases Test
+        logger.info("=" * 50)
+        logger.info("RUNNING EDGE CASES TEST")
+        logger.info("=" * 50)
+        test_results["tests"]["edge_cases"] = self.test_edge_cases()
+        
+        # 5. Concurrent Requests Test
+        logger.info("=" * 50)
+        logger.info("RUNNING CONCURRENT REQUESTS TEST")
+        logger.info("=" * 50)
+        test_results["tests"]["concurrent"] = self.test_concurrent_requests(test_image_path, num_concurrent=3)
         
         # Calculate overall summary
-        total_tests = 0
-        passed_tests = 0
+        overall_passed = 0
+        overall_total = 0
         
-        # Count known images tests
-        known_images_results = comprehensive_results["test_results"].get("known_images", {})
-        if "summary" in known_images_results:
-            total_tests += known_images_results["summary"].get("total", 0)
-            passed_tests += known_images_results["summary"].get("passed", 0)
+        for test_name, test_result in test_results["tests"].items():
+            if "summary" in test_result:
+                overall_passed += test_result["summary"].get("passed", 0)
+                overall_total += test_result["summary"].get("total", 0)
+            elif test_name == "health_check":
+                overall_total += 1
+                if test_result.get("status") == "healthy":
+                    overall_passed += 1
         
-        # Count health check tests
-        health_results = comprehensive_results["test_results"].get("health_check", {})
-        if "performance_metrics" in health_results:
-            total_tests += health_results["performance_metrics"].get("total_requests", 0)
-            passed_tests += health_results["performance_metrics"].get("success_count", 0)
-        
-        # Count edge cases tests
-        edge_results = comprehensive_results["test_results"].get("edge_cases", {})
-        if "edge_tests" in edge_results:
-            edge_test_count = len(edge_results["edge_tests"])
-            edge_passed = sum(1 for test in edge_results["edge_tests"] if test.get("success", False))
-            total_tests += edge_test_count
-            passed_tests += edge_passed
-        
-        comprehensive_results["overall_summary"] = {
-            "total_tests": total_tests,
-            "passed_tests": passed_tests,
-            "failed_tests": total_tests - passed_tests,
-            "success_rate": round((passed_tests / total_tests * 100) if total_tests > 0 else 0, 1)
+        test_results["overall_summary"] = {
+            "total_tests": overall_total,
+            "passed_tests": overall_passed,
+            "failed_tests": overall_total - overall_passed,
+            "success_rate": (overall_passed / overall_total * 100) if overall_total > 0 else 0
         }
         
-        logger.info(f"Comprehensive test completed. Overall success rate: {comprehensive_results['overall_summary']['success_rate']}%")
+        # Clean up temporary image if created
+        if test_image_path.name == "temp_test_image.jpg":
+            test_image_path.unlink()
         
-        return comprehensive_results
-    
-    def save_results(self, results: Dict[str, Any], filename: str = None) -> Path:
-        """
-        Save test results to JSON file.
+        logger.info("=" * 50)
+        logger.info("COMPREHENSIVE TEST SUITE COMPLETED")
+        logger.info("=" * 50)
+        logger.info(f"Overall Success Rate: {test_results['overall_summary']['success_rate']:.1f}%")
+        logger.info(f"Tests Passed: {test_results['overall_summary']['passed_tests']}/{test_results['overall_summary']['total_tests']}")
         
-        Args:
-            results: Test results dictionary
-            filename: Optional filename (default: auto-generated)
-            
-        Returns:
-            Path to saved file
-        """
-        if filename is None:
-            timestamp = time.strftime('%Y%m%d_%H%M%S')
-            filename = f"cerebrium_test_results_{timestamp}.json"
-        
-        filepath = Path(filename)
-        
-        try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(results, f, indent=2, ensure_ascii=False)
-            
-            logger.info(f"Test results saved to: {filepath}")
-            return filepath
-            
-        except Exception as e:
-            logger.error(f"Failed to save results: {str(e)}")
-            raise
+        return test_results
+
+
+def save_test_results(results: Dict[str, Any], output_file: str = "test_results.json"):
+    """Save test results to JSON file."""
+    try:
+        with open(output_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        logger.info(f"Test results saved to: {output_file}")
+    except Exception as e:
+        logger.error(f"Failed to save test results: {str(e)}")
 
 
 def main():
-    """Main function to handle command line arguments and run tests."""
+    """Main entry point for the test script."""
     parser = argparse.ArgumentParser(description="Test deployed Cerebrium model")
-    
-    parser.add_argument(
-        "--image", 
-        type=str, 
-        help="Path to image file for single prediction"
-    )
-    
-    parser.add_argument(
-        "--api-key", 
-        type=str, 
-        default=API_KEY,
-        help="Cerebrium API key"
-    )
-    
-    parser.add_argument(
-        "--model-name", 
-        type=str, 
-        default="resnet18-classifier",
-        help="Name of the deployed model"
-    )
-    
-    parser.add_argument(
-        "--test-preset", 
-        action="store_true",
-        help="Run preset custom tests with known images"
-    )
-    
-    parser.add_argument(
-        "--health-check", 
-        action="store_true",
-        help="Run health check tests"
-    )
-    
-    parser.add_argument(
-        "--edge-cases", 
-        action="store_true",
-        help="Run edge case tests"
-    )
-    
-    parser.add_argument(
-        "--comprehensive", 
-        action="store_true",
-        help="Run all tests (comprehensive test suite)"
-    )
-    
-    parser.add_argument(
-        "--top-k", 
-        type=int, 
-        default=5,
-        help="Number of top predictions to return (default: 5)"
-    )
-    
-    parser.add_argument(
-        "--save-results", 
-        action="store_true",
-        help="Save test results to JSON file"
-    )
-    
-    parser.add_argument(
-        "--output-file", 
-        type=str,
-        help="Output filename for saving results"
-    )
+    parser.add_argument("--image", type=str, help="Path to test image")
+    parser.add_argument("--api-key", type=str, default=API_KEY, help="Cerebrium API key")
+    parser.add_argument("--model-name", type=str, default="resnet18-classifier", help="Deployed model name")
+    parser.add_argument("--test-type", type=str, choices=[
+        "single", "known", "performance", "edge", "concurrent", "health", "comprehensive"
+    ], default="comprehensive", help="Type of test to run")
+    parser.add_argument("--top-k", type=int, default=5, help="Number of top predictions to return")
+    parser.add_argument("--num-requests", type=int, default=10, help="Number of requests for performance testing")
+    parser.add_argument("--concurrent", type=int, default=5, help="Number of concurrent requests")
+    parser.add_argument("--output", type=str, default="test_results.json", help="Output file for test results")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     
     args = parser.parse_args()
     
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
     # Initialize tester
     try:
-        tester = CerebriumModelTester(
-            api_key=args.api_key,
-            model_name=args.model_name
-        )
+        tester = CerebriumModelTester(args.api_key, args.model_name)
     except Exception as e:
         logger.error(f"Failed to initialize tester: {str(e)}")
         return 1
     
-    results = None
-    
+    # Run tests based on type
     try:
-        if args.image:
-            # Single image prediction
+        if args.test_type == "single":
+            if not args.image:
+                logger.error("--image is required for single image testing")
+                return 1
+            
             image_path = Path(args.image)
             if not image_path.exists():
-                logger.error(f"Image file not found: {image_path}")
+                logger.error(f"Image not found: {image_path}")
                 return 1
             
-            logger.info(f"Predicting single image: {image_path}")
             result = tester.predict_image(image_path, top_k=args.top_k)
+            print(json.dumps(result, indent=2))
             
             if result.get("success", False):
-                print(f"\n🎯 Prediction Results for {image_path.name}:")
-                print(f"   Predicted Class ID: {result.get('class_id', 'N/A')}")
-                print(f"   Confidence: {result.get('confidence', 'N/A'):.4f}")
-                print(f"   Response Time: {result.get('request_time', 'N/A')}s")
-                
-                if "top_predictions" in result:
-                    print(f"\n📊 Top {args.top_k} Predictions:")
-                    for i, pred in enumerate(result["top_predictions"], 1):
-                        print(f"   {i}. Class {pred['class_id']}: {pred['confidence']:.4f}")
+                print(f"\nPredicted class: {result.get('class_id', 'Unknown')}")
+                return 0
             else:
-                print(f"\n❌ Prediction failed: {result.get('message', 'Unknown error')}")
                 return 1
-        
-        elif args.test_preset:
-            # Run preset tests with known images
+                
+        elif args.test_type == "known":
             results = tester.test_known_images()
             
-        elif args.health_check:
-            # Run health check tests
-            results = tester.test_model_health()
+        elif args.test_type == "performance":
+            if not args.image:
+                logger.error("--image is required for performance testing")
+                return 1
+            results = tester.test_performance(Path(args.image), num_requests=args.num_requests)
             
-        elif args.edge_cases:
-            # Run edge case tests
+        elif args.test_type == "edge":
             results = tester.test_edge_cases()
             
-        elif args.comprehensive:
-            # Run comprehensive test suite
-            results = tester.run_comprehensive_test()
+        elif args.test_type == "concurrent":
+            if not args.image:
+                logger.error("--image is required for concurrent testing")
+                return 1
+            results = tester.test_concurrent_requests(Path(args.image), num_concurrent=args.concurrent)
             
+        elif args.test_type == "health":
+            results = tester.health_check()
+            print(json.dumps(results, indent=2))
+            return 0 if results.get("status") == "healthy" else 1
+            
+        elif args.test_type == "comprehensive":
+            image_path = Path(args.image) if args.image else None
+            results = tester.comprehensive_test_suite(image_path)
+        
+        # Save and display results
+        save_test_results(results, args.output)
+        
+        # Determine exit code based on results
+        if "overall_summary" in results:
+            success_rate = results["overall_summary"]["success_rate"]
+            return 0 if success_rate >= 80 else 1  # 80% success rate threshold
+        elif "summary" in results:
+            success_rate = results["summary"]["success_rate"]
+            return 0 if success_rate >= 80 else 1
         else:
-            # Default: run known images test
-            logger.info("No specific test specified. Running preset tests with known images...")
-            results = tester.test_known_images()
-        
-        # Save results if requested
-        if results and args.save_results:
-            tester.save_results(results, args.output_file)
-        
-        # Print summary if results available
-        if results:
-            print(f"\n📈 Test Summary:")
-            if "summary" in results:
-                summary = results["summary"]
-                print(f"   Total Tests: {summary.get('total', 0)}")
-                print(f"   Passed: {summary.get('passed', 0)}")
-                print(f"   Failed: {summary.get('failed', 0)}")
-                print(f"   Success Rate: {summary.get('success_rate', 0)}%")
-            elif "overall_summary" in results:
-                summary = results["overall_summary"]
-                print(f"   Total Tests: {summary.get('total_tests', 0)}")
-                print(f"   Passed: {summary.get('passed_tests', 0)}")
-                print(f"   Failed: {summary.get('failed_tests', 0)}")
-                print(f"   Success Rate: {summary.get('success_rate', 0)}%")
-        
-        return 0
-        
+            return 0
+            
     except KeyboardInterrupt:
-        logger.info("Test interrupted by user")
+        logger.info("Testing interrupted by user")
         return 1
     except Exception as e:
-        logger.error(f"Test execution failed: {str(e)}")
+        logger.error(f"Testing failed: {str(e)}")
         return 1
 
 

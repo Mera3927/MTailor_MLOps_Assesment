@@ -1,0 +1,121 @@
+[cerebrium.deployment]
+# Deployment name - should be unique and descriptive
+name = "resnet18-imagenet-classifier"
+
+# Python version for the deployment environment
+python_version = "3.9"
+
+# Hardware configuration - GPU required for optimal performance
+hardware = "GPU"
+
+# CUDA version for GPU acceleration
+cuda_version = "11.8"
+
+# AWS region for deployment (options: us-east-1, us-west-2, eu-west-1)
+region = "us-east-1"
+
+# Memory allocation (in MB) - adjust based on model requirements
+memory = 4096
+
+# CPU allocation (number of cores)
+cpu = 2
+
+# Timeout for cold starts (in seconds)
+timeout = 300
+
+# Environment variables
+[cerebrium.deployment.env]
+# Add any environment variables your app needs
+LOG_LEVEL = "INFO"
+MODEL_NAME = "resnet18_classifier.onnx"
+
+# Dependencies configuration
+[cerebrium.dependencies]
+# Python packages from requirements.txt
+pip = ["requirements.txt"]
+
+# System packages (if needed)
+# apt = ["libgl1-mesa-glx", "libglib2.0-0"]
+
+# Docker configuration for custom image
+[cerebrium.docker]
+# Use custom Dockerfile
+dockerfile = "Dockerfile"
+
+# Base image (optional - will be overridden by Dockerfile)
+# base_image = "python:3.9-slim"
+
+# Health check configuration
+[cerebrium.health_check]
+# Health check endpoint
+path = "/health"
+
+# Health check timeout (seconds)
+timeout = 30
+
+# Number of retries before marking as unhealthy
+retries = 3
+
+# Interval between health checks (seconds)
+interval = 60
+
+# Auto-scaling configuration
+[cerebrium.scaling]
+# Minimum number of instances
+min_replicas = 0
+
+# Maximum number of instances
+max_replicas = 5
+
+# Target requests per second per instance
+target_requests_per_second = 2
+
+# Scale down delay (seconds)
+scale_down_delay = 300
+
+# Scale up delay (seconds)
+scale_up_delay = 60
+
+# Monitoring and logging
+[cerebrium.monitoring]
+# Enable detailed metrics collection
+metrics = true
+
+# Enable request/response logging
+logging = true
+
+# Log retention period (days)
+log_retention_days = 30
+
+# Network configuration
+[cerebrium.network]
+# Enable public access
+public = true
+
+# Custom domain (optional)
+# domain = "your-custom-domain.com"
+
+# CORS configuration for web requests
+[cerebrium.cors]
+# Allow all origins (adjust for production)
+allow_origins = ["*"]
+
+# Allowed HTTP methods
+allow_methods = ["GET", "POST", "OPTIONS"]
+
+# Allowed headers
+allow_headers = ["*"]
+
+# Security configuration
+[cerebrium.security]
+# Enable API key authentication
+# api_key_required = true
+
+# Rate limiting (requests per minute)
+rate_limit = 100
+
+# Custom headers
+[cerebrium.headers]
+# Add custom response headers
+"X-Model-Version" = "1.0.0"
+"X-Framework" = "ONNX"
